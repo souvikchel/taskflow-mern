@@ -1,42 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import api, { getApiErrorMessage } from './api.js'
+import { createTask } from './taskCreation.js'
 import './App.css'
-
-const STORAGE_KEY = 'taskflow.tasks'
-
-const starterTasks = [
-  {
-    id: 'task-1',
-    title: 'Map out the new onboarding flow',
-    description: 'Outline each step from sign-up to the first successful project.',
-    status: 'in-progress',
-    priority: 'high',
-    dueDate: '2026-10-14',
-  },
-  {
-    id: 'task-2',
-    title: 'Review Q4 campaign concepts',
-    description: 'Share feedback with the marketing team before the next review.',
-    status: 'todo',
-    priority: 'medium',
-    dueDate: '2026-10-16',
-  },
-  {
-    id: 'task-3',
-    title: 'Update the component library',
-    description: 'Document the latest button and form field variants.',
-    status: 'todo',
-    priority: 'low',
-    dueDate: '2026-10-19',
-  },
-  {
-    id: 'task-4',
-    title: 'Send project handoff notes',
-    description: 'Collect decisions and links for the engineering handoff.',
-    status: 'done',
-    priority: 'medium',
-    dueDate: '2026-10-11',
-  },
-]
 
 const emptyTask = {
   title: '',
@@ -52,20 +17,8 @@ const statusLabels = {
   done: 'Done',
 }
 
-function isTaskList(value) {
-  return (
-    Array.isArray(value) &&
-    value.every(
-      (task) =>
-        task &&
-        typeof task.id === 'string' &&
-        typeof task.title === 'string' &&
-        typeof task.description === 'string' &&
-        ['todo', 'in-progress', 'done'].includes(task.status) &&
-        ['low', 'medium', 'high'].includes(task.priority) &&
-        typeof task.dueDate === 'string',
-    )
-  )
+function normalizeTask(task) {
+  return { ...task, id: task._id }
 }
 
 function App() {
@@ -76,42 +29,39 @@ function App() {
   const [statusFilter, setStatusFilter] = useState('all')
   const [priorityFilter, setPriorityFilter] = useState('all')
   const [isFormOpen, setIsFormOpen] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+  const isCreatingRef = useRef(false)
   const [editingId, setEditingId] = useState(null)
   const [form, setForm] = useState(emptyTask)
 
   useEffect(() => {
-    const loadTimeout = window.setTimeout(() => {
-      try {
-        const storedTasks = window.localStorage.getItem(STORAGE_KEY)
-        const initialTasks = storedTasks === null ? starterTasks : JSON.parse(storedTasks)
-        if (!isTaskList(initialTasks)) {
-          throw new Error('Saved task data is not in the expected format.')
-        }
-        setTasks(initialTasks)
-      } catch (loadError) {
-        setError(
-          `Tasks could not be loaded from this browser. ${
-            loadError instanceof Error ? loadError.message : 'Please check browser storage.'
-          }`,
-        )
-      } finally {
-        setIsLoading(false)
-      }
-    }, 0)
-    return () => window.clearTimeout(loadTimeout)
+    let isCurrent = true
+    api.get('/tasks')
+      .then(({ data }) => {
+        if (isCurrent) setTasks(data.tasks.map(normalizeTask))
+      })
+      .catch((loadError) => {
+        if (isCurrent) setError(`Tasks could not be loaded. ${getApiErrorMessage(loadError)}`)
+      })
+      .finally(() => {
+        if (isCurrent) setIsLoading(false)
+      })
+    return () => {
+      isCurrent = false
+    }
   }, [])
 
-  function saveTasks(updatedTasks) {
-    setTasks(updatedTasks)
+  async function saveTaskRequest(request) {
+    setIsSaving(true)
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedTasks))
+      const result = await request()
       setError('')
+      return result
     } catch (saveError) {
-      setError(
-        `Changes could not be saved to this browser. ${
-          saveError instanceof Error ? saveError.message : 'Please check browser storage.'
-        }`,
-      )
+      setError(`Changes could not be saved. ${getApiErrorMessage(saveError)}`)
+      throw saveError
+    } finally {
+      setIsSaving(false)
     }
   }
 
@@ -155,34 +105,50 @@ function App() {
     setForm(emptyTask)
   }
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault()
     const task = { ...form, title: form.title.trim(), description: form.description.trim() }
-    if (!task.title) return
+    if (!task.title || isSaving || (editingId === null && isCreatingRef.current)) return
 
-    if (editingId) {
-      saveTasks(
-        tasks.map((currentTask) =>
-          currentTask.id === editingId ? { ...currentTask, ...task } : currentTask,
-        ),
-      )
-    } else {
-      saveTasks([
-        { ...task, id: globalThis.crypto.randomUUID() },
-        ...tasks,
-      ])
+    if (editingId === null) isCreatingRef.current = true
+
+    try {
+      if (editingId) {
+        const { data } = await saveTaskRequest(() => api.put(`/tasks/${editingId}`, task))
+        setTasks((currentTasks) =>
+          currentTasks.map((currentTask) =>
+            currentTask.id === editingId ? normalizeTask(data.task) : currentTask,
+          ),
+        )
+      } else {
+        await saveTaskRequest(() => createTask(api, task, setTasks))
+      }
+      closeTaskForm()
+    } catch {
+      return
+    } finally {
+      if (editingId === null) isCreatingRef.current = false
     }
-    closeTaskForm()
   }
 
-  function updateStatus(id, status) {
-    saveTasks(
-      tasks.map((task) => (task.id === id ? { ...task, status } : task)),
-    )
+  async function updateStatus(id, status) {
+    try {
+      const { data } = await saveTaskRequest(() => api.put(`/tasks/${id}`, { status }))
+      setTasks((currentTasks) =>
+        currentTasks.map((task) => (task.id === id ? normalizeTask(data.task) : task)),
+      )
+    } catch {
+      return
+    }
   }
 
-  function deleteTask(id) {
-    saveTasks(tasks.filter((task) => task.id !== id))
+  async function deleteTask(id) {
+    try {
+      await saveTaskRequest(() => api.delete(`/tasks/${id}`))
+      setTasks((currentTasks) => currentTasks.filter((task) => task.id !== id))
+    } catch {
+      return
+    }
   }
 
   return (
@@ -321,8 +287,10 @@ function App() {
                   </label>
                 </div>
                 <div className="form-actions">
-                  <button className="secondary-button" type="button" onClick={closeTaskForm}>Cancel</button>
-                  <button className="primary-button" type="submit">{editingId ? 'Save changes' : 'Create task'}</button>
+                  <button className="secondary-button" type="button" onClick={closeTaskForm} disabled={isSaving}>Cancel</button>
+                  <button className="primary-button" type="submit" disabled={isSaving}>
+                    {isSaving ? 'Saving...' : editingId ? 'Save changes' : 'Create task'}
+                  </button>
                 </div>
               </form>
             </section>
