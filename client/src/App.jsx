@@ -196,7 +196,7 @@ function App() {
           <div className="page-heading">
             <div>
               <p className="eyebrow">YOUR WORKSPACE</p>
-              <h1>Good morning, Jamie <span aria-hidden="true">✦</span></h1>
+              <h1>Hello, User <span aria-hidden="true">✦</span></h1>
               <p className="heading-subtitle">Here&apos;s what&apos;s happening with your tasks today.</p>
             </div>
             <button className="primary-button" type="button" onClick={openNewTaskForm}>
